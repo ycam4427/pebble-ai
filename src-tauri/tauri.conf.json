@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pebble",
+  "version": "0.9.0",
+  "identifier": "com.localai.assistant",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Pebble",
+        "width": 1120,
+        "height": 780,
+        "minWidth": 880,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Pebble",
+    "category": "Utility",
+    "shortDescription": "Your cozy local AI file companion",
+    "longDescription": "Pebble is a safety-first desktop assistant that runs entirely on your computer with a local Ollama model. Pebble proposes file actions in plain language; an independent safety system checks every one of them; and nothing happens without your approval. Deleted files go to a recoverable trash and every change can be undone.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      }
+    }
+  }
+}

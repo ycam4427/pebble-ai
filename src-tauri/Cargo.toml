@@ -1,0 +1,48 @@
+[package]
+name = "local-ai-assistant"
+version = "0.9.0"
+description = "Local AI Computer Assistant — a safety-first, fully local desktop assistant"
+authors = ["Local AI Assistant"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix keeps the lib name unique from the bin name (Windows linker quirk).
+name = "local_ai_assistant_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime + HTTP client for Ollama (localhost http only -> no TLS backend needed)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1"
+
+# Local persistence (SQLite compiled from source, zero external dependency)
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Filesystem analysis
+walkdir = "2"
+sha2 = "0.10"
+dirs = "5"
+dunce = "1"            # canonicalize without the \\?\ verbatim prefix (clean prefix matching)
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+thiserror = "1"
+anyhow = "1"
+
+[profile.release]
+# Balanced for a reasonable build time while still optimized + stripped.
+opt-level = 2
+codegen-units = 16
+lto = false
+strip = true
