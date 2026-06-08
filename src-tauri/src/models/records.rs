@@ -33,6 +33,18 @@ pub struct ActionLogEntry {
     pub undone_at: Option<String>,
 }
 
+/// One thing Pebble remembers about the user (opt-in; he curates these).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryItem {
+    pub id: String,
+    /// "fact" | "event"
+    pub kind: String,
+    pub content: String,
+    /// YYYY-MM-DD for dated events, else None.
+    pub event_date: Option<String>,
+    pub created_at: String,
+}
+
 /// A frequently-used / remembered location.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Location {

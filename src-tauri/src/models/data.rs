@@ -44,6 +44,27 @@ pub struct WebResult {
     pub snippet: String,
 }
 
+/// A single in-file content match (for the Content Search extension).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentMatch {
+    pub path: String,
+    pub name: String,
+    pub line: u64,
+    pub snippet: String,
+}
+
+/// Current weather (from wttr.in — opt-in, uses the internet).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeatherInfo {
+    pub location: String,
+    pub temp_c: String,
+    pub temp_f: String,
+    pub feels_like_c: String,
+    pub description: String,
+    pub humidity: String,
+    pub wind_kmph: String,
+}
+
 /// A group of byte-for-byte identical files (same size + same SHA-256).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DupGroup {
@@ -87,6 +108,11 @@ pub enum QueryResult {
         query: String,
         files: Vec<FileEntry>,
     },
+    ContentMatches {
+        root: String,
+        query: String,
+        matches: Vec<ContentMatch>,
+    },
     Storage {
         stats: StorageStats,
     },
@@ -105,6 +131,9 @@ pub enum QueryResult {
     WebResults {
         query: String,
         results: Vec<WebResult>,
+    },
+    Weather {
+        info: WeatherInfo,
     },
     /// A read-only action that could not run (e.g. path rejected by safety).
     Error {

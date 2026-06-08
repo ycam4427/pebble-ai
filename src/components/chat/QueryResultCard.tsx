@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   BookOpen,
   Clock,
+  Cloud,
   FileText,
   Files,
   FolderTree,
@@ -94,6 +95,33 @@ export default function QueryResultCard({ result }: { result: QueryResult }) {
           sub={`${result.files.length} matches`}
         >
           <FileRows files={result.files} />
+        </Card>
+      );
+    case "content_matches":
+      return (
+        <Card
+          icon={<Search size={15} />}
+          title={`Inside files · "${result.query}"`}
+          sub={`${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`}
+        >
+          {result.matches.length === 0 && (
+            <div className="faint" style={{ padding: "10px 14px" }}>
+              No files contained that.
+            </div>
+          )}
+          {result.matches.map((m, i) => (
+            <div className="file-row" key={i} title={m.path} style={{ display: "block" }}>
+              <div className="fname">
+                {m.name || fileName(m.path)} <span className="faint">· line {m.line}</span>
+              </div>
+              <div
+                className="faint"
+                style={{ fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+              >
+                {m.snippet}
+              </div>
+            </div>
+          ))}
         </Card>
       );
     case "duplicates": {
@@ -190,6 +218,24 @@ export default function QueryResultCard({ result }: { result: QueryResult }) {
           ))}
         </Card>
       );
+    case "weather": {
+      const w = result.info;
+      return (
+        <Card icon={<Cloud size={15} />} title={`Weather · ${w.location}`} sub={w.description}>
+          <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>
+              {w.temp_c}°C{" "}
+              <span className="faint" style={{ fontSize: 13, fontWeight: 400 }}>
+                ({w.temp_f}°F)
+              </span>
+            </div>
+            <div className="faint" style={{ fontSize: 13 }}>
+              Feels like {w.feels_like_c}°C · Humidity {w.humidity}% · Wind {w.wind_kmph} km/h
+            </div>
+          </div>
+        </Card>
+      );
+    }
     case "error":
       return (
         <Card icon={<AlertTriangle size={15} />} title="Couldn't complete that">

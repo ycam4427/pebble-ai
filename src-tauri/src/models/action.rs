@@ -72,6 +72,11 @@ pub enum Action {
         root: String,
         query: String,
     },
+    /// Extension: search the *contents* of files (not just names).
+    SearchContent {
+        root: String,
+        query: String,
+    },
     StorageStats {
         #[serde(default)]
         root: Option<String>,
@@ -85,9 +90,18 @@ pub enum Action {
     SummarizeDocument {
         path: String,
     },
+    /// Extension: read text out of an image (screenshot/photo) via OS OCR.
+    ReadImageText {
+        path: String,
+    },
     /// Search the web (DuckDuckGo). Off unless enabled in Settings.
     WebSearch {
         query: String,
+    },
+    /// Current weather (wttr.in). Off unless enabled in Settings.
+    GetWeather {
+        #[serde(default)]
+        location: Option<String>,
     },
 
     // ---- Tier 1: mutations (require confirmation) -----------------------
@@ -108,6 +122,11 @@ pub enum Action {
     /// Clean/clear/empty a folder: move everything inside it to the recoverable
     /// Trash, keeping the folder itself.
     ClearFolder {
+        root: String,
+    },
+    /// Extension: find duplicate files and move the extra copies to the Trash
+    /// (keeping one of each).
+    CleanDuplicates {
         root: String,
     },
 

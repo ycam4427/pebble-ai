@@ -79,6 +79,31 @@ export interface WebResult {
   snippet: string;
 }
 
+export interface ContentMatch {
+  path: string;
+  name: string;
+  line: number;
+  snippet: string;
+}
+
+export interface WeatherInfo {
+  location: string;
+  temp_c: string;
+  temp_f: string;
+  feels_like_c: string;
+  description: string;
+  humidity: string;
+  wind_kmph: string;
+}
+
+export interface MemoryItem {
+  id: string;
+  kind: string;
+  content: string;
+  event_date: string | null;
+  created_at: string;
+}
+
 export interface FolderAnalysis {
   root: string;
   total_bytes: number;
@@ -95,11 +120,13 @@ export type QueryResult =
   | { type: "duplicates"; root: string; groups: DupGroup[] }
   | { type: "stale_files"; root: string; days: number; files: FileEntry[] }
   | { type: "search_results"; root: string; query: string; files: FileEntry[] }
+  | { type: "content_matches"; root: string; query: string; matches: ContentMatch[] }
   | { type: "storage"; stats: StorageStats }
   | { type: "folder_analysis"; analysis: FolderAnalysis }
   | { type: "file_content"; path: string; preview: string; truncated: boolean }
   | { type: "summary"; path: string; summary: string }
   | { type: "web_results"; query: string; results: WebResult[] }
+  | { type: "weather"; info: WeatherInfo }
   | { type: "error"; message: string };
 
 export interface GenStats {
@@ -185,6 +212,12 @@ export interface Config {
   retention_days: number;
   allow_execute: boolean;
   allow_web: boolean;
+  ext_content_search: boolean;
+  ext_ocr: boolean;
+  ext_dedupe: boolean;
+  allow_weather: boolean;
+  allow_memory: boolean;
+  adapt_tone: boolean;
   managed_roots: string[];
   user_name: string;
   persona: string;
@@ -239,6 +272,12 @@ export interface SettingsUpdate {
   retention_days?: number;
   allow_execute?: boolean;
   allow_web?: boolean;
+  ext_content_search?: boolean;
+  ext_ocr?: boolean;
+  ext_dedupe?: boolean;
+  allow_weather?: boolean;
+  allow_memory?: boolean;
+  adapt_tone?: boolean;
   managed_roots?: string[];
   user_name?: string;
   persona?: string;

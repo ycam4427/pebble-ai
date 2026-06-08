@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  Brain,
+  Cloud,
   Cpu,
   Database,
   FolderLock,
@@ -28,9 +30,49 @@ const SWATCH: Record<string, string[]> = {
   liquidglass: ["#081530", "#7cc7ff", "#103a6b"],
 };
 
+function ExtToggle({
+  label,
+  desc,
+  on,
+  onToggle,
+}: {
+  label: string;
+  desc: string;
+  on: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="toggle" style={{ marginBottom: 14 }}>
+      <div>
+        <div>{label}</div>
+        <div className="faint" style={{ fontSize: 12 }}>
+          {desc}
+        </div>
+      </div>
+      <button className={`switch ${on ? "on" : ""}`} onClick={onToggle} aria-label={`Toggle ${label}`}>
+        <span className="knob" />
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsView() {
-  const { config, models, refreshModels, saveSettings, setTheme, ollama, plugins, pulling, pullModel, system } =
-    useStore();
+  const {
+    config,
+    models,
+    refreshModels,
+    saveSettings,
+    setTheme,
+    ollama,
+    plugins,
+    pulling,
+    pullModel,
+    system,
+    memories,
+    refreshMemory,
+    deleteMemoryItem,
+    clearAllMemory,
+  } = useStore();
   const [url, setUrl] = useState("");
   const [retention, setRetention] = useState(30);
   const [newRoot, setNewRoot] = useState("");
@@ -39,6 +81,7 @@ export default function SettingsView() {
 
   useEffect(() => {
     refreshModels();
+    refreshMemory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -57,7 +100,7 @@ export default function SettingsView() {
   const recInstalled = system ? models.some((m) => m.name === system.recommended_model) : false;
 
   return (
-    <div>
+    <div className="settings-wrap">
       {/* You & Pebble ----------------------------------------------------- */}
       <Accordion icon={<Heart size={17} />} title="You & Pebble" sub="how Pebble talks to you" defaultOpen>
         <div className="field">
@@ -109,6 +152,84 @@ export default function SettingsView() {
             </button>
           </div>
         </div>
+
+        <div className="toggle" style={{ marginTop: 4 }}>
+          <div>
+            <div>Match my tone</div>
+            <div className="faint" style={{ fontSize: 12 }}>
+              When on, Pebble mirrors your energy and length — playful when you're playful, gentle when
+              you're down, brief when you're brief.
+            </div>
+          </div>
+          <button
+            className={`switch ${config.adapt_tone ? "on" : ""}`}
+            onClick={() => saveSettings({ adapt_tone: !config.adapt_tone })}
+            aria-label="Toggle tone matching"
+          >
+            <span className="knob" />
+          </button>
+        </div>
+      </Accordion>
+
+      {/* Pebble's Memory ------------------------------------------------- */}
+      <Accordion
+        icon={<Brain size={17} />}
+        title="Pebble's Memory"
+        sub={config.allow_memory ? `${memories.length} remembered` : "off"}
+      >
+        <div className="toggle" style={{ marginBottom: 14 }}>
+          <div>
+            <div>Let Pebble remember things about you</div>
+            <div className="faint" style={{ fontSize: 12 }}>
+              Off by default. When on, Pebble quietly keeps a few personal notes (and dates) so he can
+              follow up later — like asking how a test went. It all stays on this PC.
+            </div>
+          </div>
+          <button
+            className={`switch ${config.allow_memory ? "on" : ""}`}
+            onClick={() => saveSettings({ allow_memory: !config.allow_memory })}
+            aria-label="Toggle memory"
+          >
+            <span className="knob" />
+          </button>
+        </div>
+
+        {config.allow_memory && memories.length === 0 && (
+          <div className="faint" style={{ fontSize: 12 }}>
+            Nothing yet — chat with Pebble and he'll remember what matters 🤍
+          </div>
+        )}
+        {config.allow_memory && memories.length > 0 && (
+          <>
+            <div className="roots-list">
+              {memories.map((m) => (
+                <div className="root-pill" key={m.id} style={{ alignItems: "flex-start", gap: 8 }}>
+                  <span style={{ flex: 1 }}>
+                    {m.content}
+                    {m.event_date && (
+                      <span className="faint" style={{ fontSize: 11, display: "block" }}>
+                        📅 {m.event_date}
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    className="icon-btn"
+                    title="Forget this"
+                    style={{ background: "none", border: "none", color: "inherit" }}
+                    onClick={() => deleteMemoryItem(m.id)}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="inline" style={{ justifyContent: "flex-end", marginTop: 8 }}>
+              <button className="btn sm" onClick={() => clearAllMemory()}>
+                Clear all
+              </button>
+            </div>
+          </>
+        )}
       </Accordion>
 
       {/* Appearance ------------------------------------------------------- */}
@@ -320,6 +441,25 @@ export default function SettingsView() {
           </button>
         </div>
 
+        <div className="toggle" style={{ marginBottom: 18 }}>
+          <div>
+            <div>
+              <Cloud size={13} style={{ verticalAlign: "-2px", marginRight: 6 }} />
+              Let Pebble check the weather
+            </div>
+            <div className="faint" style={{ fontSize: 12 }}>
+              Off by default. When on, Pebble can fetch the current weather (this uses the internet).
+            </div>
+          </div>
+          <button
+            className={`switch ${config.allow_weather ? "on" : ""}`}
+            onClick={() => saveSettings({ allow_weather: !config.allow_weather })}
+            aria-label="Toggle weather"
+          >
+            <span className="knob" />
+          </button>
+        </div>
+
         <label className="faint" style={{ fontSize: 12.5 }}>
           Managed (writable) folders — changes are only allowed inside these
         </label>
@@ -396,8 +536,31 @@ export default function SettingsView() {
       </Accordion>
 
       {/* Extensions ------------------------------------------------------- */}
-      <Accordion icon={<Puzzle size={17} />} title="Extensions" sub="coming soon">
-        <div className="hint">The plugin architecture is in place; these aren't implemented yet.</div>
+      <Accordion icon={<Puzzle size={17} />} title="Extensions" sub="opt-in abilities">
+        <div className="hint">Extra abilities, off by default. Turn on what you'd like Pebble to do.</div>
+
+        <ExtToggle
+          label="Content Search"
+          desc="Search inside your files (text, code, notes) by what they contain, not just the filename."
+          on={config.ext_content_search}
+          onToggle={() => saveSettings({ ext_content_search: !config.ext_content_search })}
+        />
+        <ExtToggle
+          label="OCR — read images"
+          desc="Pull text out of screenshots and photos using Windows' built-in OCR engine."
+          on={config.ext_ocr}
+          onToggle={() => saveSettings({ ext_ocr: !config.ext_ocr })}
+        />
+        <ExtToggle
+          label="Duplicate Cleaner"
+          desc="Find duplicate files and send the extra copies to the recoverable Trash (keeps one)."
+          on={config.ext_dedupe}
+          onToggle={() => saveSettings({ ext_dedupe: !config.ext_dedupe })}
+        />
+
+        <div className="section-label" style={{ marginTop: 16 }}>
+          On the roadmap
+        </div>
         <div className="plugin-grid">
           {plugins.map((p) => (
             <div className="plugin-card" key={p.id}>

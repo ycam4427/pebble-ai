@@ -3,7 +3,7 @@
 //! performed operation is written to the action log with the data needed to undo it.
 
 use crate::models::OpKind;
-use crate::safety::ValidatedPlan;
+use crate::safety::{SafetyConfig, ValidatedPlan};
 use crate::trash::{self, TrashConfig};
 use crate::{db, fsutil};
 use anyhow::{anyhow, Result};
@@ -23,7 +23,12 @@ pub struct ExecutionReport {
 }
 
 /// Execute every approved operation in a validated plan.
-pub fn execute(plan: &ValidatedPlan, conn: &Connection, trash_cfg: &TrashConfig) -> ExecutionReport {
+pub fn execute(
+    plan: &ValidatedPlan,
+    conn: &Connection,
+    trash_cfg: &TrashConfig,
+    cfg: &SafetyConfig,
+) -> ExecutionReport {
     let mut report = ExecutionReport::default();
 
     for (i, vo) in plan.ops().iter().enumerate() {
@@ -36,8 +41,30 @@ pub fn execute(plan: &ValidatedPlan, conn: &Connection, trash_cfg: &TrashConfig)
         let tier = vo.tier.level();
         let idx = i as i64;
 
+        // Defense-in-depth: re-validate the paths NOW, in case something changed
+        // between approval and execution (e.g. a symlink/junction swapped in).
+        if let Err(reason) = crate::safety::validator::recheck_op(op, cfg) {
+            report.failed += 1;
+            report
+                .errors
+                .push(format!("{}: blocked at execution ({reason})", op.source));
+            let _ = db::insert_action_log(
+                conn,
+                Some(plan.id()),
+                idx,
+                op.kind.as_str(),
+                tier,
+                &op.source,
+                op.destination.as_deref(),
+                "failed",
+                None,
+                Some(&format!("blocked at execution: {reason}")),
+            );
+            continue;
+        }
+
         let result = match op.kind {
-            OpKind::Move | OpKind::Rename => do_move(conn, plan.id(), idx, op, tier),
+            OpKind::Move | OpKind::Rename => do_move(conn, plan.id(), idx, op, tier, cfg),
             OpKind::Delete => do_delete(conn, plan.id(), idx, op, tier, trash_cfg),
             OpKind::Execute => do_execute(conn, plan.id(), idx, op, tier),
             OpKind::EmptyRecycleBin => do_empty_recycle_bin(conn, plan.id(), idx, op, tier),
@@ -75,6 +102,7 @@ fn do_move(
     idx: i64,
     op: &crate::models::Operation,
     tier: u8,
+    cfg: &SafetyConfig,
 ) -> Result<String> {
     let src = Path::new(&op.source);
     let dst_str = op
@@ -82,6 +110,10 @@ fn do_move(
         .as_ref()
         .ok_or_else(|| anyhow!("missing destination"))?;
     let dst = fsutil::unique_dest(Path::new(dst_str));
+    // The auto-renamed final destination must still pass the safety gate.
+    if let Err(reason) = crate::safety::validator::check_path(&dst, cfg, false) {
+        return Err(anyhow!("destination blocked at execution: {reason}"));
+    }
     fsutil::move_path(src, &dst)?;
 
     let undo = json!({

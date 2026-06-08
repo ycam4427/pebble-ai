@@ -5,8 +5,8 @@
 use crate::ai::{ModelStatus, OllamaClient};
 use crate::executor::{self, ExecutionReport};
 use crate::models::{
-    Action, ActionLogEntry, Conversation, FileEntry, FolderAnalysis, GenStats, Location, Message,
-    Operation, QueryResult, StorageStats, TrashItem,
+    Action, ActionLogEntry, AiPlan, Conversation, FileEntry, FolderAnalysis, GenStats, Location,
+    MemoryItem, Message, Operation, QueryResult, StorageStats, TrashItem,
 };
 use crate::plugin::{PluginInfo, PluginRegistry};
 use crate::safety::ValidatedPlan;
@@ -14,6 +14,8 @@ use crate::state::{self, AppState, Config};
 use crate::{ai, db, fsops, intent, memory, planner, safety, trash, undo};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use tauri::Emitter;
 
 // ----------------------------------------------------------------- error helpers
 
@@ -34,6 +36,19 @@ pub struct ChatResponse {
     pub stats: Option<GenStats>,
 }
 
+/// A streamed prose delta pushed to the UI during generation.
+#[derive(Clone, Serialize)]
+struct TokenEvent {
+    id: String,
+    delta: String,
+}
+
+/// Tells the UI to clear the streamed text (before a corrective retry).
+#[derive(Clone, Serialize)]
+struct ResetEvent {
+    id: String,
+}
+
 /// Heuristic: the small model sometimes *claims* it did a task while emitting no
 /// actions (which means nothing happened). Detect that so we can nudge it.
 fn looks_like_false_completion(msg: &str) -> bool {
@@ -46,22 +61,79 @@ fn looks_like_false_completion(msg: &str) -> bool {
     CLAIMS.iter().any(|c| m.contains(c))
 }
 
+/// Turn a raw Ollama/transport error into a message the user can actually act on.
+fn friendly_ollama_error(model: &str, err: &str) -> String {
+    let e = err.to_lowercase();
+    if e.contains("reach")
+        || e.contains("connect")
+        || e.contains("timed out")
+        || e.contains("timeout")
+        || e.contains("os error")
+        || e.contains("dns")
+    {
+        "I can't reach Ollama right now 🪨 — make sure it's running (open a terminal and run \
+         `ollama serve`), then try again. Pebble needs Ollama running locally to think."
+            .to_string()
+    } else if e.contains("not found") || e.contains("pull") || e.contains("no such model") {
+        format!(
+            "The model \"{model}\" isn't installed yet. Open Settings → AI Model to download it \
+             (or run `ollama pull {model}`), then try again."
+        )
+    } else {
+        format!("Something went wrong talking to Ollama: {err}")
+    }
+}
+
+/// If an action belongs to a disabled extension, the message to show instead.
+fn disabled_extension_message(
+    action: &Action,
+    ext_content: bool,
+    ext_ocr: bool,
+    ext_dedupe: bool,
+) -> Option<String> {
+    match action {
+        Action::SearchContent { .. } if !ext_content => Some(
+            "Content Search is off. Turn it on in Settings → Extensions so I can search inside files."
+                .into(),
+        ),
+        Action::ReadImageText { .. } if !ext_ocr => Some(
+            "OCR is off. Turn it on in Settings → Extensions so I can read text from images.".into(),
+        ),
+        Action::CleanDuplicates { .. } if !ext_dedupe => {
+            Some("Duplicate Cleaner is off. Turn it on in Settings → Extensions first.".into())
+        }
+        _ => None,
+    }
+}
+
 #[tauri::command]
 pub async fn send_message(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     conversation_id: String,
     content: String,
     mode: Option<String>,
 ) -> Result<ChatResponse, String> {
     let planning = mode.as_deref() == Some("plan");
+    let just_chat = mode.as_deref() == Some("chat");
+    let conversational = planning || just_chat; // no actions in chat or plan mode
+    let iso = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let human = chrono::Local::now().format("%A, %B %e, %Y").to_string();
 
     // 1) Gather context under locks, then release before any await.
-    let (messages, model, ollama, safety_cfg, allow_web) = {
+    let (messages, model, ollama, safety_cfg, allow_web, allow_weather, ext_content, ext_ocr, ext_dedupe) = {
         let conn = state.db.lock().map_err(lock_err)?;
         let cfg = state.config.lock().map_err(lock_err)?;
         db::insert_message(&conn, &conversation_id, "user", &content, None).map_err(to_str)?;
-        let system = if planning {
-            ai::planning_prompt(&cfg.user_name, &cfg.persona, &cfg.about_you)
+        let recall = if cfg.allow_memory {
+            memory::recall_block(&conn, &cfg.user_name, &iso)
+        } else {
+            String::new()
+        };
+        let system = if just_chat {
+            ai::chat_prompt(&cfg.user_name, &cfg.persona, &cfg.about_you, cfg.adapt_tone, &human, &recall)
+        } else if planning {
+            ai::planning_prompt(&cfg.user_name, &cfg.persona, &cfg.about_you, cfg.adapt_tone, &human, &recall)
         } else {
             ai::system_prompt(
                 &state.platform.known_folders,
@@ -70,7 +142,14 @@ pub async fn send_message(
                 &cfg.user_name,
                 &cfg.persona,
                 &cfg.about_you,
+                cfg.adapt_tone,
+                &human,
+                &recall,
                 cfg.allow_web,
+                cfg.allow_weather,
+                cfg.ext_content_search,
+                cfg.ext_ocr,
+                cfg.ext_dedupe,
             )
         };
         let messages =
@@ -78,17 +157,45 @@ pub async fn send_message(
         let model = cfg.model.clone();
         let ollama = state.ollama.lock().map_err(lock_err)?.clone();
         let safety_cfg = state.safety_config(&cfg);
-        (messages, model, ollama, safety_cfg, cfg.allow_web)
+        (
+            messages,
+            model,
+            ollama,
+            safety_cfg,
+            cfg.allow_web,
+            cfg.allow_weather,
+            cfg.ext_content_search,
+            cfg.ext_ocr,
+            cfg.ext_dedupe,
+        )
     };
 
-    // 2) Ask the model. Plan mode = plain prose; Do mode = structured JSON.
-    let outcome = ollama
-        .chat(&model, &messages, !planning)
+    // 2) Ask the model, streaming tokens to the UI as they arrive. Plan mode =
+    //    plain prose; Do mode = structured JSON (we surface only the "message"
+    //    field as it streams; actions are parsed once the object is complete).
+    state.cancel.store(false, Ordering::Relaxed);
+    let cancel = state.cancel.clone();
+    let emit_app = app.clone();
+    let emit_cid = conversation_id.clone();
+    let outcome = match ollama
+        .chat_stream(&model, &messages, !conversational, cancel.clone(), move |delta| {
+            let _ = emit_app.emit(
+                "chat:token",
+                TokenEvent {
+                    id: emit_cid.clone(),
+                    delta: delta.to_string(),
+                },
+            );
+        })
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(o) => o,
+        Err(e) => return Err(friendly_ollama_error(&model, &e.to_string())),
+    };
+    let cancelled = cancel.load(Ordering::Relaxed);
 
-    // ---- Planning mode: just talk it through, never execute. ----
-    if planning {
+    // ---- Conversational modes (Chat / Plan): just talk, never execute. ----
+    if conversational {
         let msg = outcome.content.trim().to_string();
         let conn = state.db.lock().map_err(lock_err)?;
         db::insert_message(&conn, &conversation_id, "assistant", &msg, None).map_err(to_str)?;
@@ -106,12 +213,29 @@ pub async fn send_message(
     }
 
     // ---- Do mode ----
-    let mut ai_plan = intent::parse(&outcome.content);
+    // If the user hit Stop mid-stream the JSON is incomplete, so use the prose we
+    // streamed rather than trying to parse a half-finished object.
+    let mut ai_plan = if cancelled {
+        AiPlan {
+            message: ai::ollama::extract_partial_message(&outcome.content)
+                .unwrap_or_else(|| outcome.content.trim().to_string()),
+            actions: Vec::new(),
+        }
+    } else {
+        intent::parse(&outcome.content)
+    };
     let mut stats_outcome = outcome;
 
     // Corrective retry: if Pebble claimed it's "done" but produced no actions,
-    // nudge it once to actually act or ask — words alone change nothing.
-    if ai_plan.actions.is_empty() && looks_like_false_completion(&ai_plan.message) {
+    // nudge it once to actually act or ask — words alone change nothing. Skipped
+    // if the user cancelled.
+    if !cancelled && ai_plan.actions.is_empty() && looks_like_false_completion(&ai_plan.message) {
+        let _ = app.emit(
+            "chat:reset",
+            ResetEvent {
+                id: conversation_id.clone(),
+            },
+        );
         let mut retry = messages.clone();
         retry.push(ai::ChatMessage {
             role: "assistant".into(),
@@ -126,8 +250,29 @@ pub async fn send_message(
                       is, search for it or ask me. Do NOT say it's done."
                 .into(),
         });
-        if let Ok(o2) = ollama.chat(&model, &retry, true).await {
-            ai_plan = intent::parse(&o2.content);
+        let r_app = app.clone();
+        let r_cid = conversation_id.clone();
+        if let Ok(o2) = ollama
+            .chat_stream(&model, &retry, true, cancel.clone(), move |delta| {
+                let _ = r_app.emit(
+                    "chat:token",
+                    TokenEvent {
+                        id: r_cid.clone(),
+                        delta: delta.to_string(),
+                    },
+                );
+            })
+            .await
+        {
+            ai_plan = if cancel.load(Ordering::Relaxed) {
+                AiPlan {
+                    message: ai::ollama::extract_partial_message(&o2.content)
+                        .unwrap_or_else(|| o2.content.trim().to_string()),
+                    actions: Vec::new(),
+                }
+            } else {
+                intent::parse(&o2.content)
+            };
             stats_outcome = o2;
         }
     }
@@ -136,6 +281,10 @@ pub async fn send_message(
     let mut query_results: Vec<QueryResult> = Vec::new();
     let mut ops: Vec<Operation> = Vec::new();
     for action in &ai_plan.actions {
+        if let Some(msg) = disabled_extension_message(action, ext_content, ext_ocr, ext_dedupe) {
+            query_results.push(QueryResult::Error { message: msg });
+            continue;
+        }
         match planner::classify(action) {
             planner::Class::Read => {
                 let a = action.clone();
@@ -166,6 +315,24 @@ pub async fn send_message(
                             }),
                             Err(e) => query_results.push(QueryResult::Error {
                                 message: format!("Web search failed: {e}"),
+                            }),
+                        }
+                    }
+                }
+            }
+            planner::Class::Weather => {
+                if let Action::GetWeather { location } = action {
+                    if !allow_weather {
+                        query_results.push(QueryResult::Error {
+                            message: "Weather is off. Turn it on in Settings → Abilities (it uses \
+                                      the internet)."
+                                .into(),
+                        });
+                    } else {
+                        match crate::weather::fetch(location.as_deref()).await {
+                            Ok(info) => query_results.push(QueryResult::Weather { info }),
+                            Err(e) => query_results.push(QueryResult::Error {
+                                message: format!("Couldn't get the weather: {e}"),
                             }),
                         }
                     }
@@ -238,6 +405,207 @@ pub async fn send_message(
             total_ms: stats_outcome.total_ms,
         }),
     })
+}
+
+/// Ask an in-flight streaming generation to stop (the Stop button).
+#[tauri::command]
+pub fn cancel_generation(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.cancel.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// After a turn, let Pebble decide what (if anything) is worth remembering about
+/// the user, and store it. No-op unless memory is enabled. Best-effort, async.
+#[tauri::command]
+pub async fn extract_memories(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<usize, String> {
+    let (model, ollama, name, transcript) = {
+        let conn = state.db.lock().map_err(lock_err)?;
+        let cfg = state.config.lock().map_err(lock_err)?;
+        if !cfg.allow_memory {
+            return Ok(0);
+        }
+        let msgs = db::list_messages(&conn, &conversation_id).map_err(to_str)?;
+        let recent: Vec<String> = msgs
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .filter(|m| m.role == "user" || m.role == "assistant")
+            .map(|m| format!("{}: {}", m.role, m.content))
+            .collect();
+        if recent.is_empty() {
+            return Ok(0);
+        }
+        let name = if cfg.user_name.trim().is_empty() {
+            "the user".to_string()
+        } else {
+            cfg.user_name.trim().to_string()
+        };
+        let model = cfg.model.clone();
+        let ollama = state.ollama.lock().map_err(lock_err)?.clone();
+        (model, ollama, name, recent.join("\n"))
+    };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let prompt = format!(
+        "You quietly keep a few long-term memories about {name} so you can be a better friend later. \
+         From the conversation below, extract ONLY durable, personal things worth remembering about them \
+         as a person — their life, preferences, relationships, plans, feelings, or important dated events. \
+         IGNORE file/computer tasks, requests, and small talk. If they mention an event with a date, \
+         include it as YYYY-MM-DD (today is {today}; resolve things like 'next Friday' or 'July 1st'). \
+         Reply with ONLY JSON: {{\"memories\":[{{\"content\":\"short note in third person\",\"date\":\"YYYY-MM-DD or empty\"}}]}}. \
+         Use an empty list if there's nothing worth keeping.\n\nConversation:\n{transcript}"
+    );
+    let messages = vec![ai::ChatMessage {
+        role: "user".into(),
+        content: prompt,
+    }];
+    let out = match ollama.chat(&model, &messages, true).await {
+        Ok(o) => o,
+        Err(_) => return Ok(0),
+    };
+    let v: serde_json::Value = match serde_json::from_str(out.content.trim()) {
+        Ok(v) => v,
+        Err(_) => return Ok(0),
+    };
+    let arr = match v.get("memories").and_then(|m| m.as_array()) {
+        Some(a) => a.clone(),
+        None => return Ok(0),
+    };
+
+    let conn = state.db.lock().map_err(lock_err)?;
+    let mut stored = 0usize;
+    for m in arr.iter().take(8) {
+        let content = m
+            .get("content")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if content.is_empty() || db::memory_exists(&conn, &content) {
+            continue;
+        }
+        let date = m
+            .get("date")
+            .and_then(|s| s.as_str())
+            .map(|s| s.trim())
+            .filter(|s| s.len() == 10);
+        let kind = if date.is_some() { "event" } else { "fact" };
+        if db::insert_memory(&conn, kind, &content, date).is_ok() {
+            stored += 1;
+        }
+    }
+    Ok(stored)
+}
+
+/// Pebble proactively asks the user one warm question (uses memory + the date).
+/// Persists it as an assistant message and returns the question.
+#[tauri::command]
+pub async fn pebble_question(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<String, String> {
+    let (model, ollama, prompt) = {
+        let conn = state.db.lock().map_err(lock_err)?;
+        let cfg = state.config.lock().map_err(lock_err)?;
+        let iso = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let human = chrono::Local::now().format("%A, %B %e, %Y").to_string();
+        let recall = if cfg.allow_memory {
+            memory::recall_block(&conn, &cfg.user_name, &iso)
+        } else {
+            String::new()
+        };
+        let name = if cfg.user_name.trim().is_empty() {
+            "your friend".to_string()
+        } else {
+            cfg.user_name.trim().to_string()
+        };
+        let about = if cfg.about_you.trim().is_empty() {
+            String::new()
+        } else {
+            format!("\nThings they told you: {}", cfg.about_you.trim())
+        };
+        let prompt = format!(
+            "You are Pebble, {name}'s friend. Ask {name} ONE short, warm, genuine question — like a friend \
+             checking in. If you remember something relevant (especially an upcoming or recent event), follow \
+             up on THAT (e.g. \"how'd the math test go?\"). Otherwise ask a light get-to-know-you question. \
+             One or two sentences, casual, no preamble. Today is {human}.{about}{recall}\n\nReply with ONLY the question.",
+        );
+        let model = cfg.model.clone();
+        let ollama = state.ollama.lock().map_err(lock_err)?.clone();
+        (model, ollama, prompt)
+    };
+    let messages = vec![ai::ChatMessage {
+        role: "user".into(),
+        content: prompt,
+    }];
+    let q = match ollama.chat(&model, &messages, false).await {
+        Ok(o) => o.content.trim().to_string(),
+        Err(e) => return Err(friendly_ollama_error(&model, &e.to_string())),
+    };
+    let q = if q.is_empty() {
+        "Hey — how's your day going? 🤍".to_string()
+    } else {
+        q
+    };
+    {
+        let conn = state.db.lock().map_err(lock_err)?;
+        db::insert_message(&conn, &conversation_id, "assistant", &q, None).map_err(to_str)?;
+    }
+    Ok(q)
+}
+
+#[tauri::command]
+pub fn list_memory(state: tauri::State<'_, AppState>) -> Result<Vec<MemoryItem>, String> {
+    let conn = state.db.lock().map_err(lock_err)?;
+    db::list_memory(&conn).map_err(to_str)
+}
+
+#[tauri::command]
+pub fn delete_memory(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(lock_err)?;
+    db::delete_memory(&conn, &id).map_err(to_str)
+}
+
+#[tauri::command]
+pub fn clear_memory(state: tauri::State<'_, AppState>) -> Result<usize, String> {
+    let conn = state.db.lock().map_err(lock_err)?;
+    db::clear_memory(&conn).map_err(to_str)
+}
+
+/// Read text out of an image (OCR). Gated by the OCR extension. Persists the
+/// exchange and returns the extracted text.
+#[tauri::command]
+pub async fn read_image(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+    path: String,
+) -> Result<String, String> {
+    {
+        let cfg = state.config.lock().map_err(lock_err)?;
+        if !cfg.ext_ocr {
+            return Err("To read images, turn on OCR in Settings → Extensions first.".into());
+        }
+    }
+    let p = path.clone();
+    let text = tauri::async_runtime::spawn_blocking(move || crate::ocr::image_text(&p))
+        .await
+        .map_err(to_str)?
+        .map_err(|e| e.to_string())?;
+    let fname = Path::new(&path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image".to_string());
+    {
+        let conn = state.db.lock().map_err(lock_err)?;
+        db::insert_message(&conn, &conversation_id, "user", &format!("📷 {fname}"), None)
+            .map_err(to_str)?;
+        db::insert_message(&conn, &conversation_id, "assistant", &text, None).map_err(to_str)?;
+    }
+    Ok(text)
 }
 
 // ---------------------------------------------------------------- conversations
@@ -391,8 +759,9 @@ pub fn approve_plan(
 
     let cfg = state.config.lock().map_err(lock_err)?.clone();
     let trash_cfg = state.trash_config(&cfg);
+    let safety_cfg = state.safety_config(&cfg);
     let conn = state.db.lock().map_err(lock_err)?;
-    Ok(executor::execute(&plan, &conn, &trash_cfg))
+    Ok(executor::execute(&plan, &conn, &trash_cfg, &safety_cfg))
 }
 
 #[tauri::command]
@@ -522,6 +891,12 @@ pub struct SettingsUpdate {
     pub retention_days: Option<u64>,
     pub allow_execute: Option<bool>,
     pub allow_web: Option<bool>,
+    pub ext_content_search: Option<bool>,
+    pub ext_ocr: Option<bool>,
+    pub ext_dedupe: Option<bool>,
+    pub allow_weather: Option<bool>,
+    pub allow_memory: Option<bool>,
+    pub adapt_tone: Option<bool>,
     pub managed_roots: Option<Vec<String>>,
     pub user_name: Option<String>,
     pub persona: Option<String>,
@@ -552,6 +927,24 @@ pub fn update_settings(
         }
         if let Some(v) = update.allow_web {
             cfg.allow_web = v;
+        }
+        if let Some(v) = update.ext_content_search {
+            cfg.ext_content_search = v;
+        }
+        if let Some(v) = update.ext_ocr {
+            cfg.ext_ocr = v;
+        }
+        if let Some(v) = update.ext_dedupe {
+            cfg.ext_dedupe = v;
+        }
+        if let Some(v) = update.allow_weather {
+            cfg.allow_weather = v;
+        }
+        if let Some(v) = update.allow_memory {
+            cfg.allow_memory = v;
+        }
+        if let Some(v) = update.adapt_tone {
+            cfg.adapt_tone = v;
         }
         if let Some(v) = update.managed_roots {
             cfg.managed_roots = v;

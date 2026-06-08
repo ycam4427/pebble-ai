@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { Send, Sparkles, Wrench } from "lucide-react";
+import { Image as ImageIcon, MessageCircle, Send, Sparkles, Square, Wrench } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../../store/appStore";
 import Pebble from "../Pebble";
+import { chatReadiness } from "../../lib/readiness";
 
 const SUGGESTIONS = [
   "Clean out my Downloads",
@@ -18,17 +20,39 @@ function autoGrow(el: HTMLTextAreaElement) {
 
 export default function Composer() {
   const send = useStore((s) => s.send);
+  const stop = useStore((s) => s.stop);
+  const readImage = useStore((s) => s.readImage);
   const sending = useStore((s) => s.sending);
   const turns = useStore((s) => s.turns);
   const chatMode = useStore((s) => s.chatMode);
   const setChatMode = useStore((s) => s.setChatMode);
+  const ollama = useStore((s) => s.ollama);
+  const models = useStore((s) => s.models);
+  const modelsLoaded = useStore((s) => s.modelsLoaded);
+  const config = useStore((s) => s.config);
+  const { canSend } = chatReadiness(ollama, models, modelsLoaded, config);
   const [text, setText] = useState("");
 
   const submit = () => {
     const v = text.trim();
-    if (!v || sending) return;
+    if (!v || sending || !canSend) return;
     setText("");
     send(v);
+  };
+
+  const attach = async () => {
+    try {
+      const path = await open({
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: "Images", extensions: ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"] },
+        ],
+      });
+      if (typeof path === "string") readImage(path);
+    } catch {
+      /* cancelled or unavailable */
+    }
   };
 
   return (
@@ -36,27 +60,25 @@ export default function Composer() {
       <div className="mode-row">
         <div className="mode-switch">
           <button
+            className={`mode-opt ${chatMode === "chat" ? "active" : ""}`}
+            onClick={() => setChatMode("chat")}
+          >
+            <MessageCircle size={13} /> Chat
+          </button>
+          <button
             className={`mode-opt ${chatMode === "do" ? "active" : ""}`}
             onClick={() => setChatMode("do")}
           >
-            <Wrench size={13} /> Chat &amp; Do
+            <Wrench size={13} /> Do
           </button>
           <button
             className={`mode-opt ${chatMode === "plan" ? "active" : ""}`}
             onClick={() => setChatMode("plan")}
           >
-            <Sparkles size={13} /> Planning
+            <Sparkles size={13} /> Plan
           </button>
         </div>
       </div>
-
-      {chatMode === "plan" && (
-        <div className="plan-disclaimer">
-          🧭 <b>Planning mode</b> — Pebble only talks it through and won't change any files. Because he's
-          a small, local AI he usually needs <b>more detail than big assistants</b>, so give him specifics.
-          Switch to <b>Chat &amp; Do</b> when you're ready to carry the plan out.
-        </div>
-      )}
 
       <div className="composer-row">
         <div className={`composer-peb ${sending ? "thinking" : ""}`} title="Pebble's right here 🪨">
@@ -67,9 +89,13 @@ export default function Composer() {
             rows={1}
             value={text}
             placeholder={
-              chatMode === "plan"
-                ? "Let's plan something together…"
-                : "Tell Pebble what to find, organize, or tidy…"
+              !canSend
+                ? "Pebble's not ready yet — check the note above ☝️"
+                : chatMode === "plan"
+                  ? "Let's plan something together…"
+                  : chatMode === "chat"
+                    ? "Talk to Pebble about anything…"
+                    : "Tell Pebble what to find, organize, or tidy…"
             }
             onChange={(e) => {
               setText(e.target.value);
@@ -82,9 +108,34 @@ export default function Composer() {
               }
             }}
           />
-          <button className="send-btn" onClick={submit} disabled={!text.trim() || sending}>
-            <Send size={17} />
+          <button
+            className="attach-btn"
+            onClick={attach}
+            disabled={sending}
+            title="Add an image for Pebble to read (OCR)"
+          >
+            <ImageIcon size={18} />
           </button>
+          {sending ? (
+            <button className="send-btn" onClick={() => stop()} title="Stop generating">
+              <Square size={15} />
+            </button>
+          ) : (
+            <button
+              className="send-btn"
+              onClick={submit}
+              disabled={!text.trim() || !canSend}
+              title={
+                !canSend
+                  ? "Pebble isn't ready yet — see the note above"
+                  : !text.trim()
+                    ? "Type a message first"
+                    : "Send"
+              }
+            >
+              <Send size={17} />
+            </button>
+          )}
         </div>
       </div>
 

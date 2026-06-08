@@ -12,8 +12,8 @@ pub mod records;
 
 pub use action::{Action, AiPlan, OpKind, Operation, Tier, ValidatedOp, Verdict};
 pub use data::{
-    category_for, CategoryStat, DupGroup, FileEntry, FolderAnalysis, QueryResult, StorageStats,
-    WebResult,
+    category_for, CategoryStat, ContentMatch, DupGroup, FileEntry, FolderAnalysis, QueryResult,
+    StorageStats, WeatherInfo, WebResult,
 };
 pub use message::{Conversation, GenStats, Message};
-pub use records::{ActionLogEntry, Location, TrashItem};
+pub use records::{ActionLogEntry, Location, MemoryItem, TrashItem};

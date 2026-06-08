@@ -4,6 +4,7 @@
 use crate::models::WebResult;
 use anyhow::{anyhow, Result};
 use regex::Regex;
+use std::sync::OnceLock;
 
 pub async fn search(query: &str, limit: usize) -> Result<Vec<WebResult>> {
     let client = reqwest::Client::builder()
@@ -18,13 +19,11 @@ pub async fn search(query: &str, limit: usize) -> Result<Vec<WebResult>> {
         .map_err(|e| anyhow!("couldn't reach the web: {e}"))?;
     let body = resp.text().await.map_err(|e| anyhow!("bad response: {e}"))?;
 
-    let link_re = Regex::new(r#"(?s)class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap();
-    let snip_re = Regex::new(r#"(?s)class="result__snippet"[^>]*>(.*?)</a>"#).unwrap();
-
-    let snippets: Vec<String> = snip_re.captures_iter(&body).map(|c| clean_html(&c[1])).collect();
+    let snippets: Vec<String> =
+        snip_re().captures_iter(&body).map(|c| clean_html(&c[1])).collect();
 
     let mut out = Vec::new();
-    for (i, cap) in link_re.captures_iter(&body).enumerate() {
+    for (i, cap) in link_re().captures_iter(&body).enumerate() {
         if out.len() >= limit {
             break;
         }
@@ -92,8 +91,8 @@ fn hex(b: u8) -> Option<u8> {
 
 /// Strip HTML tags and decode a few common entities.
 fn clean_html(s: &str) -> String {
-    let tag = Regex::new(r"<[^>]+>").unwrap();
-    tag.replace_all(s, "")
+    tag_re()
+        .replace_all(s, "")
         .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -103,4 +102,26 @@ fn clean_html(s: &str) -> String {
         .replace("&nbsp;", " ")
         .trim()
         .to_string()
+}
+
+// --- regexes, compiled once and reused ---
+
+fn link_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?s)class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#)
+            .expect("valid link regex")
+    })
+}
+
+fn snip_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?s)class="result__snippet"[^>]*>(.*?)</a>"#).expect("valid snippet regex")
+    })
+}
+
+fn tag_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"<[^>]+>").expect("valid tag regex"))
 }

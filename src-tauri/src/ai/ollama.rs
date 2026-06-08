@@ -4,6 +4,9 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct OllamaClient {
@@ -33,7 +36,7 @@ struct ChatRequest<'a> {
     options: ChatOptions,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct ChatMsgRaw {
     #[serde(default)]
     content: String,
@@ -48,6 +51,21 @@ struct ChatResponseRaw {
     eval_duration: Option<u64>, // nanoseconds
     #[serde(default)]
     total_duration: Option<u64>, // nanoseconds
+}
+
+/// One line of a streaming `/api/chat` response (NDJSON).
+#[derive(Deserialize)]
+struct ChatStreamChunk {
+    #[serde(default)]
+    message: ChatMsgRaw,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    eval_duration: Option<u64>,
+    #[serde(default)]
+    total_duration: Option<u64>,
 }
 
 /// The useful parts of a chat completion, including performance stats.
@@ -124,9 +142,17 @@ pub struct ModelStatus {
 
 impl OllamaClient {
     pub fn new(base: &str) -> Self {
+        // Fail fast when Ollama isn't listening, and cap any single request so a
+        // stalled backend can't hang the app forever. The cap is generous on
+        // purpose — generation on a slow machine is legitimately slow.
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             base: base.trim_end_matches('/').to_string(),
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -174,6 +200,92 @@ impl OllamaClient {
         })
     }
 
+    /// Streaming chat completion. Calls `on_delta` with successive *prose* deltas.
+    /// In JSON mode only the value of the top-level "message" field is surfaced as
+    /// it streams; the full raw content is still returned so actions can be parsed
+    /// once the object is complete. Stops early if `cancel` is set.
+    pub async fn chat_stream(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        json_format: bool,
+        cancel: Arc<AtomicBool>,
+        mut on_delta: impl FnMut(&str),
+    ) -> Result<ChatOutcome> {
+        let req = ChatRequest {
+            model,
+            messages,
+            stream: true,
+            format: if json_format { Some("json") } else { None },
+            options: ChatOptions {
+                temperature: 0.2,
+                num_ctx: 8192,
+            },
+        };
+        let url = format!("{}/api/chat", self.base);
+        let mut resp = self
+            .http
+            .post(&url)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| anyhow!("cannot reach Ollama at {} ({e})", self.base))?;
+        if !resp.status().is_success() {
+            let code = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("Ollama returned {code}: {body}"));
+        }
+
+        let mut raw = String::new();
+        let mut line_buf: Vec<u8> = Vec::new();
+        let mut emitted = 0usize; // chars of prose already surfaced
+        let mut eval_count = 0u64;
+        let mut eval_duration = 0u64;
+        let mut total_duration = 0u64;
+
+        while let Some(chunk) = resp.chunk().await.map_err(|e| anyhow!("stream error: {e}"))? {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            line_buf.extend_from_slice(&chunk);
+            while let Some(pos) = line_buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = line_buf.drain(..=pos).collect();
+                let trimmed = &line[..line.len().saturating_sub(1)];
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let parsed: ChatStreamChunk = match serde_json::from_slice(trimmed) {
+                    Ok(p) => p,
+                    Err(_) => continue, // skip a malformed line
+                };
+                raw.push_str(&parsed.message.content);
+                if parsed.done {
+                    eval_count = parsed.eval_count.unwrap_or(0);
+                    eval_duration = parsed.eval_duration.unwrap_or(0);
+                    total_duration = parsed.total_duration.unwrap_or(0);
+                }
+                let prose = if json_format {
+                    extract_partial_message(&raw).unwrap_or_default()
+                } else {
+                    raw.clone()
+                };
+                let total = prose.chars().count();
+                if total > emitted {
+                    let delta: String = prose.chars().skip(emitted).collect();
+                    emitted = total;
+                    on_delta(&delta);
+                }
+            }
+        }
+
+        Ok(ChatOutcome {
+            content: raw,
+            eval_count,
+            eval_duration_ns: eval_duration,
+            total_ms: total_duration / 1_000_000,
+        })
+    }
+
     /// Summarize free text with the model (used for document summaries).
     pub async fn summarize(&self, model: &str, text: &str) -> Result<String> {
         let messages = vec![
@@ -194,7 +306,7 @@ impl OllamaClient {
 
     pub async fn version(&self) -> Result<String> {
         let url = format!("{}/api/version", self.base);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http.get(&url).timeout(Duration::from_secs(20)).send().await?;
         let v: serde_json::Value = resp.json().await?;
         Ok(v.get("version")
             .and_then(|x| x.as_str())
@@ -207,6 +319,7 @@ impl OllamaClient {
         let resp = self
             .http
             .get(&url)
+            .timeout(Duration::from_secs(20))
             .send()
             .await
             .map_err(|e| anyhow!("cannot reach Ollama at {} ({e})", self.base))?;
@@ -216,7 +329,7 @@ impl OllamaClient {
 
     async fn ps(&self) -> Result<Vec<PsModel>> {
         let url = format!("{}/api/ps", self.base);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http.get(&url).timeout(Duration::from_secs(20)).send().await?;
         let parsed: PsResponse = resp.json().await?;
         Ok(parsed.models)
     }
@@ -242,4 +355,61 @@ impl OllamaClient {
             .collect();
         Ok(out)
     }
+}
+
+/// Best-effort: pull the (possibly still-streaming) value of the top-level
+/// "message" string out of a partial JSON object, decoding escapes. Returns the
+/// text accumulated so far, or `None` if the message field hasn't started yet.
+pub fn extract_partial_message(buf: &str) -> Option<String> {
+    let key = buf.find("\"message\"")?;
+    let rest = buf[key + "\"message\"".len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let body = rest.strip_prefix('"')?;
+
+    let mut out = String::new();
+    let mut chars = body.chars();
+    let mut esc = false;
+    while let Some(c) = chars.next() {
+        if esc {
+            match c {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                'b' => out.push('\u{0008}'),
+                'f' => out.push('\u{000C}'),
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'u' => {
+                    let mut code = 0u32;
+                    let mut ok = true;
+                    for _ in 0..4 {
+                        match chars.next().and_then(|h| h.to_digit(16)) {
+                            Some(d) => code = code * 16 + d,
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if ok {
+                        if let Some(ch) = char::from_u32(code) {
+                            out.push(ch);
+                        }
+                    } else {
+                        break; // partial \u escape at the end of the buffer
+                    }
+                }
+                other => out.push(other),
+            }
+            esc = false;
+        } else {
+            match c {
+                '\\' => esc = true,
+                '"' => break, // end of the message value
+                _ => out.push(c),
+            }
+        }
+    }
+    Some(out)
 }

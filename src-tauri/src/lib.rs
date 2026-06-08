@@ -18,6 +18,7 @@ mod fsutil;
 mod intent;
 mod memory;
 mod models;
+mod ocr;
 mod planner;
 mod platform;
 mod plugin;
@@ -26,6 +27,7 @@ mod state;
 mod system;
 mod trash;
 mod undo;
+mod weather;
 
 use state::AppState;
 
@@ -40,9 +42,17 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::send_message,
+            commands::cancel_generation,
+            commands::extract_memories,
+            commands::pebble_question,
+            commands::read_image,
+            commands::list_memory,
+            commands::delete_memory,
+            commands::clear_memory,
             commands::ensure_conversation,
             commands::new_conversation,
             commands::list_conversations,

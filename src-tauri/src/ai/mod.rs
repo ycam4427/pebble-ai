@@ -6,4 +6,4 @@ pub mod prompt;
 pub mod web;
 
 pub use ollama::{ChatMessage, ModelStatus, OllamaClient};
-pub use prompt::{planning_prompt, system_prompt};
+pub use prompt::{chat_prompt, planning_prompt, system_prompt};

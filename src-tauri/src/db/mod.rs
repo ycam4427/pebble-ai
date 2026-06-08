@@ -1,7 +1,7 @@
 //! Local SQLite data-access layer. Plain functions over a `&Connection`; the
 //! connection itself lives behind a `Mutex` in the app state.
 
-use crate::models::{ActionLogEntry, Conversation, Location, Message, TrashItem};
+use crate::models::{ActionLogEntry, Conversation, Location, MemoryItem, Message, TrashItem};
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -380,4 +380,67 @@ pub fn list_locations(conn: &Connection, limit: i64) -> Result<Vec<Location>> {
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// --------------------------------------------------------------- user memory
+
+pub fn insert_memory(
+    conn: &Connection,
+    kind: &str,
+    content: &str,
+    event_date: Option<&str>,
+) -> Result<MemoryItem> {
+    let m = MemoryItem {
+        id: Uuid::new_v4().to_string(),
+        kind: kind.to_string(),
+        content: content.to_string(),
+        event_date: event_date.map(|s| s.to_string()),
+        created_at: now(),
+    };
+    conn.execute(
+        "INSERT INTO user_memory (id, kind, content, event_date, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![m.id, m.kind, m.content, m.event_date, m.created_at],
+    )?;
+    Ok(m)
+}
+
+fn row_to_memory(r: &Row) -> rusqlite::Result<MemoryItem> {
+    Ok(MemoryItem {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        content: r.get(2)?,
+        event_date: r.get(3)?,
+        created_at: r.get(4)?,
+    })
+}
+
+pub fn list_memory(conn: &Connection) -> Result<Vec<MemoryItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, content, event_date, created_at FROM user_memory ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([], row_to_memory)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// True if a near-identical memory is already stored (case-insensitive).
+pub fn memory_exists(conn: &Connection, content: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM user_memory WHERE lower(content) = lower(?1) LIMIT 1",
+        params![content],
+        |_| Ok(()),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+pub fn delete_memory(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM user_memory WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+pub fn clear_memory(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute("DELETE FROM user_memory", [])?)
 }

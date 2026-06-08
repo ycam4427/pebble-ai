@@ -8,8 +8,35 @@ export default function MessageBubble({ turn }: { turn: ChatTurn }) {
     <div className={`turn ${isUser ? "user" : "assistant"}`}>
       <div className="turn-body">
         {!isUser && <div className="who">Pebble</div>}
-        {turn.content && (
-          <div className={`bubble ${turn.isError ? "error" : ""}`}>{turn.content}</div>
+        {(turn.content || (turn.streaming && (turn.chunks?.length ?? 0) > 0)) && (
+          <div
+            className={`bubble ${turn.isError ? "error" : ""}`}
+            style={
+              turn.question
+                ? { background: "var(--accent-soft)", borderColor: "var(--accent)" }
+                : undefined
+            }
+          >
+            {turn.question && (
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "var(--accent-strong)",
+                  marginBottom: 4,
+                }}
+              >
+                🪨 Pebble's wondering…
+              </div>
+            )}
+            {turn.streaming && turn.chunks?.length
+              ? turn.chunks.map((c, i) => (
+                  <span className="tok" key={i}>
+                    {c}
+                  </span>
+                ))
+              : turn.content}
+          </div>
         )}
         {turn.queryResults?.map((q, i) => (
           <QueryResultCard key={i} result={q} />

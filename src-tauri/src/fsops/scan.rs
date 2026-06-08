@@ -146,6 +146,73 @@ pub fn find_stale_files(root: &Path, days: u64, limit: usize) -> Result<Vec<File
     Ok(out.into_iter().take(limit).map(|(_, e)| e).collect())
 }
 
+/// Extensions to treat as searchable text for content search.
+fn is_texty(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_lowercase())
+            .as_deref(),
+        Some(
+            "txt" | "md" | "markdown" | "rtf" | "csv" | "tsv" | "log" | "json" | "yaml" | "yml"
+            | "toml" | "ini" | "cfg" | "conf" | "xml" | "html" | "htm" | "css" | "js" | "jsx"
+            | "ts" | "tsx" | "rs" | "py" | "java" | "c" | "cpp" | "h" | "hpp" | "go" | "rb"
+            | "php" | "sh" | "bat" | "ps1" | "sql"
+        )
+    )
+}
+
+/// Files whose *contents* contain `query` (case-insensitive). Text-like files
+/// only, capped at 5 MB each; returns one snippet per matching file.
+pub fn search_content(
+    root: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<crate::models::ContentMatch>> {
+    let needle = query.to_lowercase();
+    if needle.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<crate::models::ContentMatch> = Vec::new();
+    let mut visited = 0usize;
+    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+        visited += 1;
+        if visited > MAX_ENTRIES || out.len() >= limit {
+            break;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !is_texty(path) {
+            continue;
+        }
+        if let Ok(md) = entry.metadata() {
+            if md.len() > 5_000_000 {
+                continue;
+            }
+        }
+        if let Ok(content) = fs::read_to_string(path) {
+            for (i, line) in content.lines().enumerate() {
+                if line.to_lowercase().contains(&needle) {
+                    let snippet: String = line.trim().chars().take(160).collect();
+                    out.push(crate::models::ContentMatch {
+                        path: path.display().to_string(),
+                        name: path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                        line: (i + 1) as u64,
+                        snippet,
+                    });
+                    break; // one match per file is enough for a result list
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Files whose name contains `query` (case-insensitive).
 pub fn search_files(root: &Path, query: &str, limit: usize) -> Result<Vec<FileEntry>> {
     let needle = query.to_lowercase();

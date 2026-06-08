@@ -9,6 +9,6 @@ pub mod summarize;
 
 pub use scan::{
     analyze_folder, dir_stats, find_duplicates, find_large_files, find_stale_files, list_dir,
-    search_files, storage_stats,
+    search_content, search_files, storage_stats,
 };
 pub use summarize::extract_text;

@@ -229,6 +229,50 @@ fn check_mutable(p: &Path, cfg: &SafetyConfig, require_exists: bool) -> Result<P
     Ok(resolved)
 }
 
+/// Re-validate an operation's paths at execution time (defense-in-depth against
+/// anything that changed between approval and execution, e.g. a symlink/junction
+/// swapped in at the destination). Mirrors the checks in `validate_op`.
+pub fn recheck_op(op: &Operation, cfg: &SafetyConfig) -> Result<(), String> {
+    match op.kind {
+        OpKind::Delete => {
+            check_mutable(Path::new(&op.source), cfg, true)?;
+        }
+        OpKind::Move | OpKind::Rename => {
+            check_mutable(Path::new(&op.source), cfg, true)?;
+            let dest = op
+                .destination
+                .as_deref()
+                .ok_or_else(|| "missing destination".to_string())?;
+            check_mutable(Path::new(dest), cfg, false)?;
+        }
+        OpKind::Execute => {
+            if !cfg.allow_execute {
+                return Err("program execution is disabled".into());
+            }
+            let resolved = paths::resolve(Path::new(&op.source))
+                .map_err(|e| format!("cannot resolve program path: {e}"))?;
+            if !resolved.exists() {
+                return Err("program not found".into());
+            }
+            for prot in &cfg.protected {
+                if paths::path_under(&resolved, prot) {
+                    return Err(format!(
+                        "refusing to execute from protected location ({})",
+                        prot.display()
+                    ));
+                }
+            }
+        }
+        OpKind::EmptyRecycleBin => {}
+    }
+    Ok(())
+}
+
+/// Re-check a single concrete path (used for the auto-renamed move destination).
+pub fn check_path(p: &Path, cfg: &SafetyConfig, require_exists: bool) -> Result<(), String> {
+    check_mutable(p, cfg, require_exists).map(|_| ())
+}
+
 fn collect_location(locs: &mut Vec<String>, path: &str) {
     let p = Path::new(path);
     let dir = p

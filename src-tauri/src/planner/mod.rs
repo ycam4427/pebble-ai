@@ -27,19 +27,24 @@ pub enum Class {
     Summarize,
     /// Web search — handled by the command layer (network + opt-in).
     Web,
+    /// Weather lookup — handled by the command layer (network + opt-in).
+    Weather,
 }
 
 pub fn classify(action: &Action) -> Class {
     match action {
         Action::SummarizeDocument { .. } => Class::Summarize,
         Action::WebSearch { .. } => Class::Web,
+        Action::GetWeather { .. } => Class::Weather,
         Action::FindLargeFiles { .. }
         | Action::FindDuplicates { .. }
         | Action::FindStaleFiles { .. }
         | Action::SearchFiles { .. }
+        | Action::SearchContent { .. }
         | Action::StorageStats { .. }
         | Action::AnalyzeFolder { .. }
-        | Action::ReadFile { .. } => Class::Read,
+        | Action::ReadFile { .. }
+        | Action::ReadImageText { .. } => Class::Read,
         _ => Class::Mutate,
     }
 }
@@ -107,6 +112,17 @@ pub fn run_query(action: &Action) -> QueryResult {
                 }
             }
         }
+        Action::SearchContent { root, query } => {
+            let r = expand(root);
+            match fsops::search_content(&r, query, 200) {
+                Ok(matches) => QueryResult::ContentMatches {
+                    root: r.display().to_string(),
+                    query: query.clone(),
+                    matches,
+                },
+                Err(e) => err(format!("Content search failed: {e}")),
+            }
+        }
         Action::StorageStats { root } => {
             let r = root
                 .as_ref()
@@ -134,6 +150,17 @@ pub fn run_query(action: &Action) -> QueryResult {
                     truncated,
                 },
                 Err(e) => err(format!("Couldn't read file: {e}")),
+            }
+        }
+        Action::ReadImageText { path } => {
+            let p = expand(path);
+            match crate::ocr::image_text(&p.display().to_string()) {
+                Ok(text) => QueryResult::FileContent {
+                    path: p.display().to_string(),
+                    preview: text,
+                    truncated: false,
+                },
+                Err(e) => err(format!("Couldn't read image text: {e}")),
             }
         }
         _ => err("internal: not a read-only action".to_string()),
@@ -174,6 +201,19 @@ pub fn build_ops(action: &Action) -> Result<Vec<Operation>> {
             let mut ops = Vec::new();
             for entry in rd.flatten() {
                 ops.push(make_op(OpKind::Delete, &entry.path(), None));
+            }
+            Ok(ops)
+        }
+        Action::CleanDuplicates { root } => {
+            let r = expand(root);
+            let groups = fsops::find_duplicates(&r)
+                .map_err(|e| anyhow!("couldn't scan for duplicates in '{}': {e}", r.display()))?;
+            let mut ops = Vec::new();
+            for g in groups {
+                // keep the first copy; send the rest to the recoverable Trash
+                for f in g.files.iter().skip(1) {
+                    ops.push(make_op(OpKind::Delete, Path::new(&f.path), None));
+                }
             }
             Ok(ops)
         }
@@ -316,10 +356,11 @@ fn replace_ci(haystack: &str, from: &str, to: &str) -> String {
         if i + fb.len() <= hb.len() && hb[i..i + fb.len()].eq_ignore_ascii_case(fb) {
             out.push_str(to);
             i += fb.len();
-        } else {
-            let ch = haystack[i..].chars().next().unwrap();
+        } else if let Some(ch) = haystack[i..].chars().next() {
             out.push(ch);
             i += ch.len_utf8();
+        } else {
+            break;
         }
     }
     out
@@ -339,9 +380,13 @@ fn expand_env_vars(s: &str) -> String {
                 }
             }
         }
-        let ch = s[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
+        match s[i..].chars().next() {
+            Some(ch) => {
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+            None => break,
+        }
     }
     out
 }

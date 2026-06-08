@@ -20,6 +20,7 @@ export default function App() {
   const config = useStore((s) => s.config);
   const activePlan = useStore((s) => s.activePlan);
   const greeted = useStore((s) => s.greeted);
+  const dragging = useStore((s) => s.dragging);
 
   useEffect(() => {
     init();
@@ -49,6 +50,15 @@ export default function App() {
       {showWelcome && <WelcomeBack />}
       {!needsOnboarding && <Notices />}
       <Toast />
+      {dragging && (
+        <div className="drop-overlay">
+          <div className="drop-card">
+            <div className="drop-plus">+</div>
+            <div className="drop-title">Drop an image here</div>
+            <div className="drop-sub">Pebble will read the text inside it 🪨</div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

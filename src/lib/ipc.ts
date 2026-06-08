@@ -11,6 +11,7 @@ import type {
   FileEntry,
   FolderAnalysis,
   Location,
+  MemoryItem,
   Message,
   ModelStatus,
   OllamaStatus,
@@ -23,8 +24,21 @@ import type {
 } from "./types";
 
 // ---- chat ----
-export const sendMessage = (conversationId: string, content: string, mode?: "do" | "plan") =>
-  invoke<ChatResponse>("send_message", { conversationId, content, mode });
+export const sendMessage = (
+  conversationId: string,
+  content: string,
+  mode?: "chat" | "do" | "plan",
+) => invoke<ChatResponse>("send_message", { conversationId, content, mode });
+export const cancelGeneration = () => invoke<void>("cancel_generation");
+export const extractMemories = (conversationId: string) =>
+  invoke<number>("extract_memories", { conversationId });
+export const pebbleQuestion = (conversationId: string) =>
+  invoke<string>("pebble_question", { conversationId });
+export const readImage = (conversationId: string, path: string) =>
+  invoke<string>("read_image", { conversationId, path });
+export const listMemory = () => invoke<MemoryItem[]>("list_memory");
+export const deleteMemory = (id: string) => invoke<void>("delete_memory", { id });
+export const clearMemory = () => invoke<number>("clear_memory");
 
 // ---- conversations ----
 export const ensureConversation = () => invoke<Conversation>("ensure_conversation");

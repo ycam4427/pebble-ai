@@ -1,4 +1,4 @@
-export const DISCORD_URL = "https://discord.gg/rYEp7dPxhY";
+export const DISCORD_URL = "https://discord.gg/ATXTFSmX6N";
 
 // What each model is good at / struggles with — shown next to the picker so you
 // know why you might upgrade (the tiny default is a chatter, not an organizer).

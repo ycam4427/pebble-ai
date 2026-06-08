@@ -13,7 +13,8 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 pub const DEFAULT_MODEL: &str = "llama3.2:3b";
 pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
@@ -34,6 +35,16 @@ pub struct Config {
     pub allow_execute: bool,
     /// Whether Pebble may search the web (off by default; opt-in for privacy).
     pub allow_web: bool,
+    /// Opt-in extensions (off by default).
+    pub ext_content_search: bool,
+    pub ext_ocr: bool,
+    pub ext_dedupe: bool,
+    /// Opt-in abilities.
+    pub allow_weather: bool,
+    /// Whether Pebble keeps a long-term memory about the user (he curates it).
+    pub allow_memory: bool,
+    /// Whether Pebble mirrors the user's tone/energy (on by default).
+    pub adapt_tone: bool,
     /// Extra sandbox roots the user has opted into (beyond home).
     pub managed_roots: Vec<String>,
     // ---- personalization ----
@@ -64,6 +75,8 @@ pub struct AppState {
     pub app_root: PathBuf,
     pub pending: Mutex<HashMap<String, ValidatedPlan>>,
     pub ollama: Mutex<OllamaClient>,
+    /// Set true to ask an in-flight streaming generation to stop (Stop button).
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -83,6 +96,7 @@ impl AppState {
             app_root,
             pending: Mutex::new(HashMap::new()),
             ollama: Mutex::new(ollama),
+            cancel: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -141,6 +155,12 @@ fn load_config(
             .unwrap_or(DEFAULT_RETENTION_DAYS),
         allow_execute: get("allow_execute").map(|s| s == "true").unwrap_or(false),
         allow_web: get("allow_web").map(|s| s == "true").unwrap_or(false),
+        ext_content_search: get("ext_content_search").map(|s| s == "true").unwrap_or(false),
+        ext_ocr: get("ext_ocr").map(|s| s == "true").unwrap_or(false),
+        ext_dedupe: get("ext_dedupe").map(|s| s == "true").unwrap_or(false),
+        allow_weather: get("allow_weather").map(|s| s == "true").unwrap_or(false),
+        allow_memory: get("allow_memory").map(|s| s == "true").unwrap_or(false),
+        adapt_tone: get("adapt_tone").map(|s| s == "true").unwrap_or(true),
         managed_roots: get("managed_roots")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
@@ -176,6 +196,12 @@ pub fn persist_config(conn: &Connection, cfg: &Config) -> anyhow::Result<()> {
     db::set_pref(conn, "retention_days", &cfg.retention_days.to_string())?;
     db::set_pref(conn, "allow_execute", &cfg.allow_execute.to_string())?;
     db::set_pref(conn, "allow_web", &cfg.allow_web.to_string())?;
+    db::set_pref(conn, "ext_content_search", &cfg.ext_content_search.to_string())?;
+    db::set_pref(conn, "ext_ocr", &cfg.ext_ocr.to_string())?;
+    db::set_pref(conn, "ext_dedupe", &cfg.ext_dedupe.to_string())?;
+    db::set_pref(conn, "allow_weather", &cfg.allow_weather.to_string())?;
+    db::set_pref(conn, "allow_memory", &cfg.allow_memory.to_string())?;
+    db::set_pref(conn, "adapt_tone", &cfg.adapt_tone.to_string())?;
     db::set_pref(
         conn,
         "managed_roots",
