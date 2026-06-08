@@ -19,6 +19,8 @@
   <a href="https://discord.gg/ATXTFSmX6N"><b>💬&nbsp; Discord</b></a>
 </p>
 
+<sub>Claude (Anthropic) was used as an assistant for planning this project and for grammar &amp; wording.</sub>
+
 </div>
 
 Tell Pebble what you'd like cleaned up, in plain English, and he figures it out. The catch is that he never actually does anything on his own. He suggests the change, shows you exactly what it would do, and waits for your go-ahead. Nothing is ever deleted for good, and the whole thing runs on your own computer through [Ollama](https://ollama.com). No cloud, no sign-up, nothing leaving your machine.
